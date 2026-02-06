@@ -47,8 +47,8 @@ SHEET_NAME = "Screener Concalls"
 CREDENTIALS_FILE = "credentials.json"
 
 # Google Calendar settings
-CALENDAR_ID = "e9b665f1aa7c91203430bcad9af20c3df9d9f4aa45ffe455cb2be475396b1d07@group.calendar.google.com"
-MAIN_CALENDAR_ID = "moonkanish@gmail.com"  # For My Stonks - copy to main calendar
+CALENDAR_ID = "9a608aff259ccc1ca3f5a98777bc19e63a62fb53b9858e56df3021e11e2544fd@group.calendar.google.com"
+MAIN_CALENDAR_ID = "9a608aff259ccc1ca3f5a98777bc19e63a62fb53b9858e56df3021e11e2544fd@group.calendar.google.com"  # For My Stonks - copy to main calendar
 CONCALL_DURATION_HOURS = 1
 
 # Calendar color IDs (1-11): Lavender, Sage, Grape, Flamingo, Banana, Tangerine, Peacock, Graphite, Blueberry, Basil, Tomato
