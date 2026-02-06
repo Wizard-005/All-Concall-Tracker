@@ -58,11 +58,11 @@ CALENDAR_COLORS = ['1', '2', '3', '7', '8', '9', '10']  # Lavender, Sage, Grape,
 # Watchlist URLs and color assignments
 WATCHLISTS = {
     "Core Watchlist": {
-        "url": "https://www.screener.in/watchlist/2266795/",
+        "url": "https://www.screener.in/watchlist/7919861/",
         "colors": ["4", "6", "5"],  # Flamingo, Tangerine, Banana - cycles through these
     },
     "My Stonks": {
-        "url": "https://www.screener.in/watchlist/4200428/",
+        "url": "https://www.screener.in/watchlist/8467281/",
         "colors": ["11"],  # Tomato only
     },
 }
