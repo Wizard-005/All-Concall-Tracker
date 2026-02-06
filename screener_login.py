@@ -148,12 +148,10 @@ def write_to_google_sheets(concalls: list[dict]) -> str:
     creds = get_google_credentials()
     client = gspread.authorize(creds)
 
-    try:
-        sheet = client.open(SHEET_NAME)
-        logger.info(f"Opened existing sheet: {SHEET_NAME}")
-    except gspread.SpreadsheetNotFound:
-        sheet = client.create(SHEET_NAME)
-        logger.info(f"Created new sheet: {SHEET_NAME}")
+try:
+        # REPLACE THE TEXT BELOW WITH YOUR ACTUAL SHEET ID FROM THE URL
+        sheet = client.open_by_key("1A_CFKpeSg1qUrianWf8im3bZ1G5ukISZx7cAmW5akLQ")
+        logger.info(f"Opened existing sheet via ID")
 
     worksheet = sheet.sheet1
     worksheet.clear()
