@@ -39,28 +39,26 @@ Single-file architecture with clear function separation:
 4. **Output**:
    - `write_to_google_sheets()` - Creates/updates sheet with formatting
    - `sync_to_google_calendar()` - Smart sync with duplicate detection via `concall_id` hash
-   - Color-codes events based on watchlist membership and overlaps
+   - Color-codes events using explicit watchlist `colorId` mapping + default color fallback
 5. **Watchlist Integration**:
    - `scrape_watchlists()` - Fetches company lists from user's Screener.in watchlists
-   - `get_watchlist_color()` - Assigns colors based on watchlist membership
-   - `is_my_stonks_company()` - Checks if company is in My Stonks watchlist
+   - `get_watchlist_match()` - Returns `(watchlist_name, colorId)` for matching companies
 
 ### Watchlist Color Coding
 
 Events are color-coded based on watchlist membership:
-- **My Stonks** → Tomato (color ID 11) - also copied to main calendar
-- **Core Watchlist** → Cycles through Flamingo, Tangerine, Banana (IDs 4, 6, 5)
-- **Overlapping non-watchlist events** → Lavender, Sage, Grape, Peacock, Graphite, Blueberry, Basil
-
-### Main Calendar Sync
-
-My Stonks events are automatically copied to the main calendar (`moonkanish@gmail.com`) if they don't already exist there. Duplicate detection uses the same `concall_id` hash mechanism.
+- **Multicap** → Sage (`2`)
+- **SME** → Basil (`10`)
+- **Quants** → Banana (`5`)
+- **Suneel ji PF** → Peacock (`7`)
+- **All non-watchlist stocks** → Flamingo (`4`, default lighter red)
 
 ### Key Design Decisions
 
 - **Duplicate detection**: MD5 hash of `company_date_time` stored in calendar event's `extendedProperties`
 - **Retry logic**: HTTP requests use `urllib3.Retry` with exponential backoff
 - **Past events**: Calendar sync skips events where `start_dt < datetime.now()`
+- **Default coloring**: Every event gets `colorId`; non-watchlist calls default to Flamingo (`4`)
 - **Rate limiting**: 0.3s delay between PDF downloads to avoid throttling
 - **Always use IST timezone** (`Asia/Kolkata`) for calendar events
 

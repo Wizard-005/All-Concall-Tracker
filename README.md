@@ -10,8 +10,8 @@ Automated system that tracks upcoming investor concalls from Screener.in, extrac
 - 📄 Extracts phone numbers from PDF announcements (92% success rate)
 - 📊 Auto-updates Google Sheet with all concall details
 - 📅 Creates Google Calendar events with reminders
-- 🎨 Color codes calls by watchlist (My Stonks → Tomato, Core Watchlist → Flamingo/Tangerine/Banana)
-- 🔔 My Stonks events auto-sync to main calendar
+- 🎨 Color codes calls by 4 watchlists (Multicap/SME/Quants/Suneel ji PF)
+- 🏷️ Adds watchlist tag in event title and uses default lighter red for non-watchlist stocks
 - 📧 Email notifications on success/failure
 - ☁️ Runs automatically via GitHub Actions (even if your laptop is off)
 

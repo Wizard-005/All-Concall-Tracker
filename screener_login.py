@@ -253,7 +253,7 @@ def get_watchlist_match(company: str, watchlists: dict[str, set[str]]) -> Option
     company_normalized = normalize_company_name(company)
 
     for watchlist_name, config in WATCHLISTS.items():
-        if watchlist_name not in WATCHLISTS or watchlist_name not in watchlists:
+        if watchlist_name not in watchlists:
             continue
 
         for wl_company in watchlists[watchlist_name]:
