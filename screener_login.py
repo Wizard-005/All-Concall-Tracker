@@ -48,22 +48,27 @@ CREDENTIALS_FILE = "credentials.json"
 
 # Google Calendar settings
 CALENDAR_ID = "9a608aff259ccc1ca3f5a98777bc19e63a62fb53b9858e56df3021e11e2544fd@group.calendar.google.com"
-MAIN_CALENDAR_ID = "9a608aff259ccc1ca3f5a98777bc19e63a62fb53b9858e56df3021e11e2544fd@group.calendar.google.com"  # For My Stonks - copy to main calendar
 CONCALL_DURATION_HOURS = 1
+DEFAULT_COLOR_ID = "4"  # Flamingo (lighter red)
 
 # Calendar color IDs (1-11): Lavender, Sage, Grape, Flamingo, Banana, Tangerine, Peacock, Graphite, Blueberry, Basil, Tomato
-# Reserved colors for watchlists - not used for general overlapping events
-CALENDAR_COLORS = ['1', '2', '3', '7', '8', '9', '10']  # Lavender, Sage, Grape, Peacock, Graphite, Blueberry, Basil
-
-# Watchlist URLs and color assignments
+# Watchlist URLs and color assignments (replace YOUR_ID_* with actual Screener watchlist IDs)
 WATCHLISTS = {
-    "Core Watchlist": {
-        "url": "https://www.screener.in/watchlist/7919861/",
-        "colors": ["4", "6", "5"],  # Flamingo, Tangerine, Banana - cycles through these
+    "Multicap": {
+        "url": "https://www.screener.in/watchlist/YOUR_ID_1/",
+        "colorId": "2",  # Sage (Brite Green)
     },
-    "My Stonks": {
-        "url": "https://www.screener.in/watchlist/8467281/",
-        "colors": ["11"],  # Tomato only
+    "SME": {
+        "url": "https://www.screener.in/watchlist/YOUR_ID_2/",
+        "colorId": "10",  # Basil (Normal Green)
+    },
+    "Quants": {
+        "url": "https://www.screener.in/watchlist/YOUR_ID_3/",
+        "colorId": "5",  # Banana (Yellow)
+    },
+    "Suneel ji PF": {
+        "url": "https://www.screener.in/watchlist/YOUR_ID_4/",
+        "colorId": "7",  # Peacock (Sky Blue)
     },
 }
 
@@ -243,18 +248,14 @@ def normalize_company_name(name: str) -> str:
     return name
 
 
-_watchlist_color_counters: dict[str, int] = {}
-
-
-def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Optional[str]:
-    """Get the calendar color for a company based on watchlist membership."""
+def get_watchlist_match(company: str, watchlists: dict[str, set[str]]) -> Optional[tuple[str, str]]:
+    """Get matching watchlist name and colorId for a company, if any."""
     company_normalized = normalize_company_name(company)
 
-    for watchlist_name in ["My Stonks", "Core Watchlist"]:
-        if watchlist_name not in WATCHLISTS or watchlist_name not in watchlists:
+    for watchlist_name, config in WATCHLISTS.items():
+        if watchlist_name not in watchlists:
             continue
 
-        config = WATCHLISTS[watchlist_name]
         for wl_company in watchlists[watchlist_name]:
             wl_normalized = normalize_company_name(wl_company)
 
@@ -263,37 +264,9 @@ def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Option
                 wl_normalized.startswith(company_normalized) or
                 company_normalized in wl_normalized or
                 wl_normalized in company_normalized):
-
-                colors = config["colors"]
-                if len(colors) == 1:
-                    return colors[0]
-
-                if watchlist_name not in _watchlist_color_counters:
-                    _watchlist_color_counters[watchlist_name] = 0
-
-                color_idx = _watchlist_color_counters[watchlist_name] % len(colors)
-                _watchlist_color_counters[watchlist_name] += 1
-                return colors[color_idx]
+                return watchlist_name, config["colorId"]
 
     return None
-
-
-def is_my_stonks_company(company: str, watchlists: dict[str, set[str]]) -> bool:
-    """Check if a company is in the My Stonks watchlist."""
-    if "My Stonks" not in watchlists:
-        return False
-
-    company_normalized = normalize_company_name(company)
-
-    for wl_company in watchlists["My Stonks"]:
-        wl_normalized = normalize_company_name(wl_company)
-        if (company_normalized == wl_normalized or
-            company_normalized.startswith(wl_normalized) or
-            wl_normalized.startswith(company_normalized) or
-            company_normalized in wl_normalized or
-            wl_normalized in company_normalized):
-            return True
-    return False
 
 
 def parse_concall_datetime(date_str: str, time_str: str) -> Optional[datetime]:
@@ -393,7 +366,7 @@ def sync_to_google_calendar(
     concalls: list[dict],
     watchlists: Optional[dict[str, set[str]]] = None
 ) -> tuple[int, int, int]:
-    """Sync concalls to Google Calendar with smart duplicate handling and color coding."""
+    """Sync concalls to Google Calendar with duplicate handling and watchlist-based color coding."""
     logger.info("Syncing to Google Calendar...")
 
     if watchlists is None:
@@ -402,22 +375,7 @@ def sync_to_google_calendar(
     creds = get_google_credentials()
     service = build('calendar', 'v3', credentials=creds)
 
-    time_slots: dict[str, list[str]] = {}
     current_time = datetime.now()
-
-    for c in concalls:
-        start_dt = parse_concall_datetime(c['date'], c['time'])
-        if start_dt and start_dt >= current_time:
-            time_key = start_dt.strftime('%Y-%m-%d %H:%M')
-            if time_key not in time_slots:
-                time_slots[time_key] = []
-            time_slots[time_key].append(c['company'])
-
-    overlap_color_map: dict[str, str] = {}
-    for time_key, companies in time_slots.items():
-        if len(companies) > 1:
-            for idx, company in enumerate(companies):
-                overlap_color_map[f"{company}_{time_key}"] = CALENDAR_COLORS[idx % len(CALENDAR_COLORS)]
 
     now_iso = now_utc().isoformat()
     existing_events: dict[str, dict] = {}
@@ -436,27 +394,6 @@ def sync_to_google_calendar(
                 existing_events[props['concall_id']] = event
     except HttpError as e:
         logger.warning(f"Could not fetch existing events: {e}")
-
-    # Get existing events from main calendar (for duplicate detection)
-    main_calendar_events: dict[str, dict] = {}
-    main_calendar_all_events: list[dict] = []
-    try:
-        main_events_result = service.events().list(
-            calendarId=MAIN_CALENDAR_ID,
-            timeMin=now_iso,
-            maxResults=500,
-            singleEvents=True
-        ).execute()
-
-        main_calendar_all_events = main_events_result.get('items', [])
-        logger.info(f"Found {len(main_calendar_all_events)} events in main calendar")
-        
-        for event in main_calendar_all_events:
-            props = event.get('extendedProperties', {}).get('private', {})
-            if 'concall_id' in props:
-                main_calendar_events[props['concall_id']] = event
-    except HttpError as e:
-        logger.warning(f"Could not fetch main calendar events: {e}")
 
     created = 0
     updated = 0
@@ -479,13 +416,13 @@ def sync_to_google_calendar(
                 f"{c['company']}_{c['date']}_{c['time']}".encode()
             ).hexdigest()
 
-            time_key = start_dt.strftime('%Y-%m-%d %H:%M')
-            color_key = f"{c['company']}_{time_key}"
-
-            color_id = get_watchlist_color(c['company'], watchlists)
-
-            if not color_id:
-                color_id = overlap_color_map.get(color_key)
+            color_id = DEFAULT_COLOR_ID
+            event_title = f"📞 {c['company']} - Concall"
+            watchlist_match = get_watchlist_match(c['company'], watchlists)
+            if watchlist_match:
+                matched_watchlist, matched_color_id = watchlist_match
+                color_id = matched_color_id
+                event_title = f"📞 {c['company']} ({matched_watchlist}) - Concall"
 
             end_dt = start_dt + timedelta(hours=CONCALL_DURATION_HOURS)
 
@@ -501,7 +438,7 @@ def sync_to_google_calendar(
 Auto-synced from Screener.in"""
 
             event_body = {
-                'summary': f"📞 {c['company']} - Concall",
+                'summary': event_title,
                 'description': description,
                 'start': {
                     'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'),
@@ -525,8 +462,7 @@ Auto-synced from Screener.in"""
                 },
             }
 
-            if color_id:
-                event_body['colorId'] = color_id
+            event_body['colorId'] = color_id
 
             if concall_id in existing_events:
                 existing = existing_events[concall_id]
@@ -547,25 +483,6 @@ Auto-synced from Screener.in"""
                     body=event_body
                 ).execute()
                 created += 1
-
-            # Copy My Stonks events to main calendar if not already there
-            if is_my_stonks_company(c['company'], watchlists):
-                # Check by concall_id first (created by this script)
-                if concall_id in main_calendar_events:
-                    logger.info(f"Already in main calendar (by ID): {c['company']}")
-                # Check by time and company name (catches any existing events)
-                elif event_exists_in_calendar(service, MAIN_CALENDAR_ID, c['company'], start_dt):
-                    logger.info(f"Skipping duplicate in main calendar: {c['company']} at {start_dt}")
-                else:
-                    try:
-                        main_event_body = event_body.copy()
-                        service.events().insert(
-                            calendarId=MAIN_CALENDAR_ID,
-                            body=main_event_body
-                        ).execute()
-                        logger.info(f"Copied to main calendar: {c['company']}")
-                    except HttpError as e:
-                        logger.warning(f"Could not copy to main calendar: {c['company']}: {e}")
 
         except HttpError as e:
             logger.error(f"Calendar API error for {c['company']}: {e}")
