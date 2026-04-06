@@ -55,19 +55,19 @@ DEFAULT_COLOR_ID = "4"  # Flamingo (lighter red)
 # Watchlist URLs and color assignments (replace YOUR_ID_* with actual Screener watchlist IDs)
 WATCHLISTS = {
     "Multicap": {
-        "url": "https://www.screener.in/watchlist/YOUR_ID_1/",
+        "url": "https://www.screener.in/watchlist/10144513/",
         "colorId": "2",  # Sage (Brite Green)
     },
     "SME": {
-        "url": "https://www.screener.in/watchlist/YOUR_ID_2/",
+        "url": "https://www.screener.in/watchlist/10144524/",
         "colorId": "10",  # Basil (Normal Green)
     },
     "Quants": {
-        "url": "https://www.screener.in/watchlist/YOUR_ID_3/",
+        "url": "https://www.screener.in/watchlist/10144536/",
         "colorId": "5",  # Banana (Yellow)
     },
     "Suneel ji PF": {
-        "url": "https://www.screener.in/watchlist/YOUR_ID_4/",
+        "url": "https://www.screener.in/watchlist/8467281/",
         "colorId": "7",  # Peacock (Sky Blue)
     },
 }
