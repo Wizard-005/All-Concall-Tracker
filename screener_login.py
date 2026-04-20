@@ -70,6 +70,11 @@ WATCHLISTS = {
         "url": "https://www.screener.in/watchlist/8467281/",
         "colorId": "7",  # Peacock (Sky Blue)
     },
+
+    "Radar": {
+        "url": "https://www.screener.in/watchlist/10280448/",
+        "colorId": "8",  # Graphite (Grey)
+    },
 }
 
 # =============================================================================
