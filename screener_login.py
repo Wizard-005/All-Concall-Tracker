@@ -13,6 +13,7 @@ import base64
 import json
 import hashlib
 import logging
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from functools import wraps
@@ -275,9 +276,9 @@ def get_watchlist_match(company: str, watchlists: dict[str, set[str]]) -> Option
 
 
 def parse_concall_datetime(date_str: str, time_str: str) -> Optional[datetime]:
-    """Parse concall date and time strings into a datetime object."""
+    """Parse concall date and time strings into a datetime object (naive IST)."""
+    combined = f"{date_str} {time_str}"
     try:
-        combined = f"{date_str} {time_str}"
         return datetime.strptime(combined, "%d %B %Y %I:%M:%S %p")
     except ValueError as e:
         logger.debug(f"Failed to parse datetime '{combined}': {e}")
@@ -380,7 +381,10 @@ def sync_to_google_calendar(
     creds = get_google_credentials()
     service = build('calendar', 'v3', credentials=creds)
 
-    current_time = datetime.now()
+    # Concall times from Screener are in IST. The GitHub Actions runner is UTC,
+    # so datetime.now() would be UTC-naive and compare incorrectly against
+    # IST-naive start_dt values. Always anchor "now" to IST.
+    current_time = now_ist().replace(tzinfo=None)
 
     now_iso = now_utc().isoformat()
     existing_events: dict[str, dict] = {}
@@ -403,16 +407,20 @@ def sync_to_google_calendar(
     created = 0
     updated = 0
     skipped = 0
+    skipped_past = 0
+    skipped_unparseable = 0
 
     for c in concalls:
         start_dt = parse_concall_datetime(c['date'], c['time'])
 
         if not start_dt:
-            logger.warning(f"Skipping {c['company']}: could not parse date/time")
+            logger.warning(f"Skipping {c['company']}: could not parse date/time ('{c['date']}' / '{c['time']}')")
+            skipped_unparseable += 1
             skipped += 1
             continue
 
         if start_dt < current_time:
+            skipped_past += 1
             skipped += 1
             continue
 
@@ -431,14 +439,13 @@ def sync_to_google_calendar(
 
             end_dt = start_dt + timedelta(hours=CONCALL_DURATION_HOURS)
 
+            pdf_section = f"\n📄 PDF Announcement:\n{c['pdf_url']}\n" if c.get('pdf_url') else "\n📄 PDF Announcement: not yet uploaded by company\n"
+
             description = f"""📞 Dial-in: {c['phone']}
 
 📅 Date: {c['date']}
 ⏰ Time: {c['time']}
-
-📄 PDF Announcement:
-{c['pdf_url']}
-
+{pdf_section}
 ---
 Auto-synced from Screener.in"""
 
@@ -496,12 +503,18 @@ Auto-synced from Screener.in"""
             logger.error(f"Unexpected error for {c['company']}: {e}")
             continue
 
-    logger.info(f"Calendar sync complete - Created: {created}, Updated: {updated}, Skipped: {skipped}")
+    logger.info(
+        f"Calendar sync complete - Created: {created}, Updated: {updated}, "
+        f"Skipped: {skipped} (past: {skipped_past}, unparseable: {skipped_unparseable})"
+    )
     return created, updated, skipped
 
 
 def extract_phone_from_pdf(pdf_url: str, session: Optional[requests.Session] = None) -> str:
     """Download PDF and extract phone numbers."""
+    if not pdf_url:
+        return "PDF not yet available"
+
     if session is None:
         session = get_requests_session()
 
@@ -601,7 +614,13 @@ def login_to_screener(driver: webdriver.Chrome, username: str, password: str) ->
 
 
 def scrape_concalls_page(driver: webdriver.Chrome, page: int) -> list[dict]:
-    """Scrape a single page of concalls."""
+    """Scrape a single page of concalls.
+
+    Note: a concall is captured even if it has no PDF link yet. Companies
+    often announce upcoming concalls a few days before uploading the
+    dial-in PDF, so requiring a PDF caused future-dated concalls to be
+    silently dropped.
+    """
     url = f"https://www.screener.in/concalls/upcoming/?p={page}"
     driver.get(url)
 
@@ -634,7 +653,10 @@ def scrape_concalls_page(driver: webdriver.Chrome, page: int) -> list[dict]:
                         pdf_url = href
                         break
 
-                if company and pdf_url:
+                # Keep the concall even if no PDF yet — date/time alone is
+                # enough to create a calendar entry. Phone will be filled
+                # in when the PDF appears on a subsequent run.
+                if company and date and time_str:
                     concalls.append({
                         "company": company,
                         "date": date,
@@ -654,14 +676,21 @@ def scrape_all_concalls(driver: webdriver.Chrome) -> list[dict]:
 
     all_concalls = []
     page = 1
+    empty_pages = 0
 
     while len(all_concalls) < TARGET_CONCALL_COUNT:
         page_concalls = scrape_concalls_page(driver, page)
-        logger.info(f"Page {page}: found {len(page_concalls)} concalls")
+        with_pdf = sum(1 for c in page_concalls if c['pdf_url'])
+        logger.info(f"Page {page}: found {len(page_concalls)} concalls ({with_pdf} with PDF)")
 
         if not page_concalls:
-            break
+            empty_pages += 1
+            if empty_pages >= 2:
+                break
+            page += 1
+            continue
 
+        empty_pages = 0
         all_concalls.extend(page_concalls)
         page += 1
 
@@ -675,6 +704,17 @@ def scrape_all_concalls(driver: webdriver.Chrome) -> list[dict]:
 
     result = unique_concalls[:TARGET_CONCALL_COUNT]
     logger.info(f"Total: {len(result)} unique concalls")
+
+    # Date distribution — useful for spotting issues like "only today's
+    # concalls were scraped".
+    date_counts = Counter(c['date'] for c in result)
+    logger.info("Concalls by date:")
+    for date_str, count in sorted(
+        date_counts.items(),
+        key=lambda x: parse_concall_datetime(x[0], "12:00:00 PM") or datetime.max
+    ):
+        logger.info(f"  {date_str}: {count}")
+
     return result
 
 
@@ -686,7 +726,8 @@ def extract_all_phone_numbers(concalls: list[dict]) -> None:
     for i, c in enumerate(concalls):
         logger.info(f"[{i+1}/{len(concalls)}] {c['company'][:30]}")
         c['phone'] = extract_phone_from_pdf(c['pdf_url'], session)
-        time.sleep(RATE_LIMIT_DELAY)
+        if c['pdf_url']:
+            time.sleep(RATE_LIMIT_DELAY)
 
 
 def sort_concalls_by_datetime(concalls: list[dict]) -> None:
