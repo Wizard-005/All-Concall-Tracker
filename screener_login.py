@@ -38,10 +38,24 @@ from googleapiclient.errors import HttpError
 # =============================================================================
 
 # Scraper settings
-TARGET_CONCALL_COUNT = 100
+# Coverage targets: keep scraping pages until we have at least
+# MIN_DAYS_COVERAGE days into the future, capped by MAX_SCRAPE_PAGES
+# and MAX_CONCALL_COUNT for safety. On earnings-season days, page 1
+# alone can be 100+ rows all dated today, so a flat count target
+# misses the next few days entirely.
+MIN_DAYS_COVERAGE = 7
+MAX_SCRAPE_PAGES = 30
+MAX_CONCALL_COUNT = 300
 PAGE_LOAD_TIMEOUT = 10  # seconds
 REQUEST_TIMEOUT = 30  # seconds
 RATE_LIMIT_DELAY = 0.3  # seconds between PDF downloads
+
+# A real Chrome User-Agent — BSE/NSE reject obvious bot UAs.
+PDF_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/122.0.0.0 Safari/537.36"
+)
 
 # Google Sheets settings
 SHEET_NAME = "Screener Concalls"
@@ -521,7 +535,11 @@ def extract_phone_from_pdf(pdf_url: str, session: Optional[requests.Session] = N
     tmp_path = None
 
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; ConcallsBot/1.0)"}
+        headers = {
+            "User-Agent": PDF_USER_AGENT,
+            "Accept": "application/pdf,application/octet-stream,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
         response = session.get(pdf_url, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
 
@@ -670,44 +688,126 @@ def scrape_concalls_page(driver: webdriver.Chrome, page: int) -> list[dict]:
     return concalls
 
 
+def get_total_pages_from_pagination(driver: webdriver.Chrome) -> Optional[int]:
+    """Extract the max page number from Screener's pagination links.
+
+    Screener renders pagination as ``1 2 3 … 19 20 495 concall invites``.
+    The last numbered link gives us the true total — far more reliable
+    than guessing when to stop with "empty page" heuristics.
+    """
+    try:
+        links = driver.find_elements(By.CSS_SELECTOR, "a[href*='upcoming/?p=']")
+        max_page = 1
+        for link in links:
+            href = link.get_attribute('href') or ''
+            match = re.search(r'[?&]p=(\d+)', href)
+            if match:
+                page_num = int(match.group(1))
+                if page_num > max_page:
+                    max_page = page_num
+        return max_page if max_page > 1 else None
+    except Exception as e:
+        logger.debug(f"Could not detect pagination total: {e}")
+        return None
+
+
+
 def scrape_all_concalls(driver: webdriver.Chrome) -> list[dict]:
-    """Scrape all concalls up to the target count."""
-    logger.info(f"Fetching up to {TARGET_CONCALL_COUNT} concalls...")
+    """Scrape every upcoming concall page reported by Screener's pagination.
 
-    all_concalls = []
-    page = 1
-    empty_pages = 0
+    Reads the true total page count from page 1's pagination footer
+    (``... 19 20 495 concall invites``) and then walks every page with
+    one retry on transient failures. This is much more reliable than the
+    old "stop on empty page" heuristic, which was bailing somewhere
+    around page 4 and limiting results to ~60 unique concalls.
+    """
+    logger.info("Scraping concalls — reading total page count from pagination...")
 
-    while len(all_concalls) < TARGET_CONCALL_COUNT:
+    all_concalls: list[dict] = []
+    today = now_ist().date()
+
+    # Scrape page 1 first, then read pagination to discover total page count.
+    page_1 = scrape_concalls_page(driver, 1)
+    with_pdf_1 = sum(1 for c in page_1 if c['pdf_url'])
+    logger.info(f"Page 1: found {len(page_1)} concalls ({with_pdf_1} with PDF)")
+    all_concalls.extend(page_1)
+
+    total_pages = get_total_pages_from_pagination(driver)
+    if total_pages:
+        logger.info(f"Screener reports {total_pages} total pages of upcoming concalls")
+        last_page = min(total_pages, MAX_SCRAPE_PAGES)
+        if last_page < total_pages:
+            logger.warning(
+                f"Capping at {MAX_SCRAPE_PAGES} pages — raise MAX_SCRAPE_PAGES "
+                f"if you need all {total_pages}."
+            )
+    else:
+        logger.info(f"No pagination detected — will scan up to {MAX_SCRAPE_PAGES} pages")
+        last_page = MAX_SCRAPE_PAGES
+
+    failed_pages: list[int] = []
+
+    for page in range(2, last_page + 1):
         page_concalls = scrape_concalls_page(driver, page)
-        with_pdf = sum(1 for c in page_concalls if c['pdf_url'])
-        logger.info(f"Page {page}: found {len(page_concalls)} concalls ({with_pdf} with PDF)")
 
         if not page_concalls:
-            empty_pages += 1
-            if empty_pages >= 2:
-                break
-            page += 1
-            continue
+            # One retry — a transient timeout shouldn't cost us a whole page.
+            logger.warning(f"Page {page}: empty, retrying once...")
+            time.sleep(2)
+            page_concalls = scrape_concalls_page(driver, page)
+            if not page_concalls:
+                logger.warning(f"Page {page}: still empty after retry — skipping")
+                failed_pages.append(page)
+                continue
 
-        empty_pages = 0
+        with_pdf = sum(1 for c in page_concalls if c['pdf_url'])
+        logger.info(f"Page {page}: found {len(page_concalls)} concalls ({with_pdf} with PDF)")
         all_concalls.extend(page_concalls)
-        page += 1
 
-    seen = set()
-    unique_concalls = []
+        # Optional early exit: we have enough days of coverage AND a
+        # reasonable number of concalls. Avoids scraping all 20 pages
+        # when 8 already cover 2 weeks ahead.
+        latest = None
+        for c in all_concalls:
+            dt = parse_concall_datetime(c['date'], c['time'])
+            if dt and (latest is None or dt.date() > latest):
+                latest = dt.date()
+        days_covered = (latest - today).days if latest else 0
+
+        if days_covered >= MIN_DAYS_COVERAGE and len(all_concalls) >= 150:
+            logger.info(
+                f"Reached {days_covered} days of coverage with {len(all_concalls)} raw rows — stopping early"
+            )
+            break
+
+        if len(all_concalls) >= MAX_CONCALL_COUNT:
+            logger.warning(f"Hit safety cap of {MAX_CONCALL_COUNT} raw rows — stopping")
+            break
+
+    if failed_pages:
+        logger.warning(f"Failed to scrape pages: {failed_pages}")
+
+    # De-duplicate by (company, date, time). Screener lists the same
+    # concall twice when both AttachLive and AttachHis PDFs exist —
+    # we want only one entry per concall. Prefer the row that has a PDF.
+    by_key: dict[tuple, dict] = {}
     for c in all_concalls:
         key = (c['company'], c['date'], c['time'])
-        if key not in seen:
-            seen.add(key)
-            unique_concalls.append(c)
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = c
+        elif not existing['pdf_url'] and c['pdf_url']:
+            by_key[key] = c
 
-    result = unique_concalls[:TARGET_CONCALL_COUNT]
-    logger.info(f"Total: {len(result)} unique concalls")
+    unique_concalls = list(by_key.values())
+    logger.info(
+        f"Total: {len(unique_concalls)} unique concalls "
+        f"(from {len(all_concalls)} raw rows, "
+        f"{len(all_concalls) - len(unique_concalls)} duplicates removed)"
+    )
 
-    # Date distribution — useful for spotting issues like "only today's
-    # concalls were scraped".
-    date_counts = Counter(c['date'] for c in result)
+    # Date distribution — quick visual check that future dates are present.
+    date_counts = Counter(c['date'] for c in unique_concalls)
     logger.info("Concalls by date:")
     for date_str, count in sorted(
         date_counts.items(),
@@ -715,7 +815,7 @@ def scrape_all_concalls(driver: webdriver.Chrome) -> list[dict]:
     ):
         logger.info(f"  {date_str}: {count}")
 
-    return result
+    return unique_concalls
 
 
 def extract_all_phone_numbers(concalls: list[dict]) -> None:
